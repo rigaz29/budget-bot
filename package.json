@@ -1,0 +1,35 @@
+{
+  "name": "budget-bot",
+  "version": "1.0.0",
+  "description": "Private Telegram bot for household budget tracking (text + receipt/vision) backed by Google Sheets",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "setup": "tsx scripts/setup.ts",
+    "init-sheet": "tsx scripts/init-sheet.ts",
+    "style-sheet": "tsx scripts/style-sheet.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "googleapis": "^144.0.0",
+    "grammy": "^1.30.0",
+    "node-cron": "^3.0.3",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.4",
+    "@types/node-cron": "^3.0.11",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.2",
+    "vitest": "^2.1.1"
+  }
+}

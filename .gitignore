@@ -1,0 +1,21 @@
+# Secrets — NEVER commit
+.env
+service-account.json
+*.pem
+
+# Dependencies & build output
+node_modules/
+dist/
+
+# Logs & OS junk
+*.log
+.DS_Store
+
+# Test fixtures containing real receipts (keep folder, ignore contents)
+test-images/*
+!test-images/.gitkeep
+struk.jpg
+
+# Editor
+.vscode/
+.idea/

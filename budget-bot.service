@@ -1,0 +1,22 @@
+[Unit]
+Description=Budget Planner Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=budgetbot
+WorkingDirectory=/home/budgetbot/budget-bot
+ExecStart=/usr/bin/node dist/index.js
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+Environment=TZ=Asia/Jakarta
+
+# Hardening (optional but recommended)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
