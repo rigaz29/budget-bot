@@ -284,6 +284,12 @@ const F_EXPENSE = '(Transactions!$J:$J<>"income")*(Transactions!$J:$J<>"saving")
 const INC_ROWS = 6;
 const LOG_ROWS = 10;
 
+// The recent-income / recent-expense lists sort by date, then by timestamp.
+// Sorting by date alone keeps same-day rows in sheet order (oldest first), so on
+// a day with more than LOG_ROWS entries the NEWEST ones were cut off the list.
+// The timestamp (col A) rides along as a trailing column purely as the
+// tie-breaker; ARRAY_CONSTRAIN then drops it from the output.
+
 interface DashLayout {
   rows: (string | number | null)[][];
   rCardLabel: number;
@@ -398,7 +404,7 @@ function buildDashboard(categories: string[], goals: string[], startDay: number)
     rIncData,
     0,
     `=IFERROR(ARRAY_CONSTRAIN(SORT(FILTER(` +
-      `{Transactions!$B:$B,Transactions!$E:$E,Transactions!$D:$D},${F_INCOME}),1,FALSE),${INC_ROWS},3),"Belum ada pemasukan")`,
+      `{Transactions!$B:$B,Transactions!$E:$E,Transactions!$D:$D,Transactions!$A:$A},${F_INCOME}),1,FALSE,4,FALSE),${INC_ROWS},3),"Belum ada pemasukan")`,
   );
 
   // TABUNGAN — savings goals vs target (all-time; savings accumulate).
@@ -429,8 +435,8 @@ function buildDashboard(categories: string[], goals: string[], startDay: number)
     rLogData,
     0,
     `=IFERROR(ARRAY_CONSTRAIN(SORT(FILTER(` +
-      `{Transactions!$B:$B,Transactions!$E:$E,Transactions!$D:$D,Transactions!$F:$F},` +
-      `(Transactions!$I:$I<>"")*(Transactions!$B:$B<>"date")*${F_EXPENSE}),1,FALSE),${LOG_ROWS},4),"Belum ada pengeluaran")`,
+      `{Transactions!$B:$B,Transactions!$E:$E,Transactions!$D:$D,Transactions!$F:$F,Transactions!$A:$A},` +
+      `(Transactions!$I:$I<>"")*(Transactions!$B:$B<>"date")*${F_EXPENSE}),1,FALSE,5,FALSE),${LOG_ROWS},4),"Belum ada pengeluaran")`,
   );
 
   return {
