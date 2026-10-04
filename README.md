@@ -37,7 +37,7 @@ tidak perlu mengisi file manual:
 ```bash
 npm install
 npm run setup        # wizard interaktif menulis .env untukmu
-npm run init-sheet   # buat 4 tab + kategori default
+npm run init-sheet   # buat 4 tab (Transactions, Budgets, Categories, Tabungan) + kategori default
 npm run style-sheet  # percantik: tab Dashboard + styling semua tab
 npm run build && npm start
 ```
@@ -90,7 +90,7 @@ Detail cara mendapatkan tiap kredensial ada di bawah. Kalau mau isi manual, liha
    yang membuat semua tab + header + kategori default otomatis. Nama tab (kalau manual):
 
    **`Transactions`** — baris pertama header (opsional tapi disarankan):
-   | timestamp | date | user | amount | category | description | payment_method | raw_input | id |
+   | timestamp | date | user | amount | category | description | payment_method | raw_input | id | type |
 
    **`Budgets`**:
    | category | monthly_limit |
@@ -111,7 +111,8 @@ Detail cara mendapatkan tiap kredensial ada di bawah. Kalau mau isi manual, liha
    Lainnya
    ```
 
-   **`Config`** — key/value cadangan (boleh dibiarkan kosong, dipakai fase 2).
+   **`Tabungan`** — target per tujuan tabungan (diisi via `/tabungan Liburan 5000000`):
+   | goal | target |
 
 > Kategori dibaca dari sheet `Categories` saat startup & di-cache. Tambah kategori →
 > `/kategori reload` (tanpa deploy ulang).

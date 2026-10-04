@@ -4,7 +4,7 @@
  *   npm run init-sheet
  *
  * Reads SPREADSHEET_ID + GOOGLE_SERVICE_ACCOUNT_PATH from .env, then:
- *   - creates any missing tab (Transactions, Budgets, Categories, Config)
+ *   - creates any missing tab (Transactions, Budgets, Categories, Tabungan)
  *   - writes header rows where a sheet has none
  *   - seeds the default categories if the Categories tab is empty
  *
@@ -44,7 +44,6 @@ const TABS: TabSpec[] = [
   { title: 'Budgets', headers: ['category', 'monthly_limit'] },
   { title: 'Categories', headers: ['category'], seed: DEFAULT_CATEGORIES.map((c) => [c]) },
   { title: 'Tabungan', headers: ['goal', 'target'] },
-  { title: 'Config', headers: ['key', 'value'] },
 ];
 
 async function getValues(sheets: sheets_v4.Sheets, spreadsheetId: string, range: string): Promise<string[][]> {

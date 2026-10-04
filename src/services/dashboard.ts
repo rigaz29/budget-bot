@@ -41,7 +41,6 @@ const THEMES: Record<string, SheetTheme> = {
   Budgets: { headerBg: hex('#166534'), altBand: hex('#f0fdf4'), tab: hex('#16a34a') },
   Categories: { headerBg: hex('#6b21a8'), altBand: hex('#faf5ff'), tab: hex('#9333ea') },
   Tabungan: { headerBg: hex('#0e7490'), altBand: hex('#ecfeff'), tab: hex('#0891b2') },
-  Config: { headerBg: hex('#374151'), altBand: hex('#f9fafb'), tab: hex('#6b7280') },
 };
 
 const CURRENCY = '"Rp "#,##0';
@@ -231,19 +230,37 @@ async function readCategories(sheets: sheets_v4.Sheets, spreadsheetId: string): 
   }
 }
 
-/** Savings-goal names from the Tabungan sheet (for the Dashboard savings table). */
+/**
+ * Savings-goal names for the Dashboard savings table: goals with a target in the
+ * Tabungan sheet, plus goals that so far only have deposits (the same union as
+ * the bot's /tabungan). Reading the Tabungan sheet alone hid every rupiah saved
+ * before a target was set. Matched case-insensitively; the sheet's spelling wins.
+ */
 async function readGoals(sheets: sheets_v4.Sheets, spreadsheetId: string): Promise<string[]> {
+  const names = new Map<string, string>();
+  const add = (name: string) => {
+    const v = name.trim();
+    if (v && !names.has(v.toLowerCase())) names.set(v.toLowerCase(), v);
+  };
   try {
     const res = await sheets.spreadsheets.values.get({ spreadsheetId, range: 'Tabungan!A:A' });
-    const rows = (res.data.values as string[][] | undefined) ?? [];
-    const out = rows
-      .map((r) => (r[0] ?? '').trim())
-      .filter((v) => v && !/^(goal|tujuan)$/i.test(v));
-    // Always render at least one row so the section isn't empty.
-    return out.length > 0 ? out : ['(belum ada tujuan — set via /tabungan)'];
+    for (const r of (res.data.values as string[][] | undefined) ?? []) {
+      if (!/^(goal|tujuan)$/i.test((r[0] ?? '').trim())) add(r[0] ?? '');
+    }
   } catch {
-    return ['(belum ada tujuan — set via /tabungan)'];
+    /* no Tabungan tab yet */
   }
+  try {
+    // E = category (the goal), J = type.
+    const res = await sheets.spreadsheets.values.get({ spreadsheetId, range: 'Transactions!E:J' });
+    for (const r of (res.data.values as string[][] | undefined) ?? []) {
+      if ((r[5] ?? '').trim().toLowerCase() === 'saving') add(r[0] ?? '');
+    }
+  } catch {
+    /* ignore — the table just lists the targets */
+  }
+  // Always render at least one row so the section isn't empty.
+  return names.size > 0 ? [...names.values()] : ['(belum ada tujuan — set via /tabungan)'];
 }
 
 // --- Dashboard content -------------------------------------------------------
@@ -378,7 +395,7 @@ function buildDashboard(categories: string[], goals: string[], startDay: number)
     set(row, 0, asLabel(categories[i]));
     set(row, 1, `=IFERROR(VLOOKUP($A${row},Budgets!$A:$B,2,FALSE),0)`);
     set(row, 2, `=SUMPRODUCT((Transactions!$E:$E=$A${row})*${F_EXPENSE}*${F_DATE_IN}*${F_AMT})`);
-    set(row, 3, `=$B${row}-$C${row}`);
+    set(row, 3, `=IF($B${row}=0,"",$B${row}-$C${row})`);
     set(row, 4, `=IF($B${row}=0,"",$C${row}/$B${row})`);
     set(row, 5, `=IF($B${row}=0,"—",SPARKLINE($C${row},{"charttype","bar";"max",$B${row};"color1",$M${row}}))`);
     set(row, 12, `=IF($B${row}=0,"#cbd5e1",IF($C${row}/$B${row}>=0.9,"#ef4444",IF($C${row}/$B${row}>=0.7,"#f59e0b","#10b981")))`);
@@ -386,15 +403,15 @@ function buildDashboard(categories: string[], goals: string[], startDay: number)
   set(rExpTotal, 0, 'TOTAL');
   set(rExpTotal, 1, `=SUM($B$${rExp0}:$B$${rExpLast})`);
   set(rExpTotal, 2, `=SUM($C$${rExp0}:$C$${rExpLast})`);
-  set(rExpTotal, 3, `=$B${rExpTotal}-$C${rExpTotal}`);
+  set(rExpTotal, 3, `=IF($B${rExpTotal}=0,"",$B${rExpTotal}-$C${rExpTotal})`);
   set(rExpTotal, 4, `=IF($B${rExpTotal}=0,"",$C${rExpTotal}/$B${rExpTotal})`);
   set(rExpTotal, 5, `=IF($B${rExpTotal}=0,"—",SPARKLINE($C${rExpTotal},{"charttype","bar";"max",$B${rExpTotal};"color1","#115e59"}))`);
 
   set(
     rFooter,
     0,
-    `="🗓  Sisa "&MAX(0,$K$5-$K$2+1)&" hari    ·    Aman: Rp "` +
-      `&TEXT(IF(MAX(0,$K$5-$K$2+1)>0,MAX(0,$D${rExpTotal})/MAX(1,$K$5-$K$2+1),0),"#,##0")&" / hari"`,
+    `="🗓  Sisa "&MAX(0,$K$5-$K$2+1)&" hari    ·    "&IF($B${rExpTotal}=0,"Set budget via /budget untuk batas harian",` +
+      `"Aman: Rp "&TEXT(IF(MAX(0,$K$5-$K$2+1)>0,MAX(0,$D${rExpTotal})/MAX(1,$K$5-$K$2+1),0),"#,##0")&" / hari")`,
   );
 
   // PEMASUKAN — recent income (spill, newest first).
@@ -416,7 +433,7 @@ function buildDashboard(categories: string[], goals: string[], startDay: number)
     set(row, 0, asLabel(goals[i]));
     set(row, 1, `=IFERROR(VLOOKUP($A${row},Tabungan!$A:$B,2,FALSE),0)`);
     set(row, 2, `=SUMPRODUCT((Transactions!$E:$E=$A${row})*${F_SAVING}*${F_AMT})`);
-    set(row, 3, `=$B${row}-$C${row}`);
+    set(row, 3, `=IF($B${row}=0,"",$B${row}-$C${row})`);
     set(row, 4, `=IF($B${row}=0,"",$C${row}/$B${row})`);
     set(row, 5, `=IF($B${row}=0,"—",SPARKLINE($C${row},{"charttype","bar";"max",$B${row};"color1",$M${row}}))`);
     set(row, 12, `=IF($B${row}=0,"#93c5fd",IF($C${row}/$B${row}>=1,"#16a34a","#1d4ed8"))`);
@@ -424,7 +441,7 @@ function buildDashboard(categories: string[], goals: string[], startDay: number)
   set(rSavTotal, 0, 'TOTAL');
   set(rSavTotal, 1, `=SUM($B$${rSav0}:$B$${rSavLast})`);
   set(rSavTotal, 2, `=SUM($C$${rSav0}:$C$${rSavLast})`);
-  set(rSavTotal, 3, `=$B${rSavTotal}-$C${rSavTotal}`);
+  set(rSavTotal, 3, `=IF($B${rSavTotal}=0,"",$B${rSavTotal}-$C${rSavTotal})`);
   set(rSavTotal, 4, `=IF($B${rSavTotal}=0,"",$C${rSavTotal}/$B${rSavTotal})`);
   set(rSavTotal, 5, `=IF($B${rSavTotal}=0,"—",SPARKLINE($C${rSavTotal},{"charttype","bar";"max",$B${rSavTotal};"color1","#1e3a8a"}))`);
 
@@ -921,7 +938,6 @@ export async function refreshDashboard(): Promise<{ categories: number; goals: n
     ['Budgets', 2],
     ['Categories', 1],
     ['Tabungan', 2],
-    ['Config', 2],
   ];
   for (const [title, cols] of DATA_TABS) {
     const m = meta.get(title);
@@ -963,11 +979,6 @@ export async function refreshDashboard(): Promise<{ categories: number; goals: n
   }
   const cat = meta.get('Categories');
   if (cat) requests.push(colWidth(cat.sheetId, 0, 210));
-  const cfg = meta.get('Config');
-  if (cfg) {
-    requests.push(colWidth(cfg.sheetId, 0, 160));
-    requests.push(colWidth(cfg.sheetId, 1, 260));
-  }
 
   // Charts (old ones deleted above; add fresh so re-runs stay idempotent).
   requests.push(...chartRequests(dash.sheetId, layout, rekap.sheetId, monthly));

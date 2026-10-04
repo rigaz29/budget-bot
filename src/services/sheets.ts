@@ -16,7 +16,6 @@ import { fromYMD } from '../utils/period';
 const SHEET_TRANSACTIONS = 'Transactions';
 const SHEET_BUDGETS = 'Budgets';
 const SHEET_CATEGORIES = 'Categories';
-const SHEET_CONFIG = 'Config';
 const SHEET_SAVINGS = 'Tabungan';
 
 /** Transactions columns span A:J (J = type). */
@@ -138,11 +137,8 @@ export async function init(): Promise<void> {
   if (missing.length > 0) {
     throw new Error(
       `Spreadsheet kekurangan sheet wajib: ${missing.join(', ')}. ` +
-        `Buat sheet: ${SHEET_TRANSACTIONS}, ${SHEET_BUDGETS}, ${SHEET_CATEGORIES}, ${SHEET_CONFIG}.`,
+        `Jalankan \`npm run init-sheet\` untuk membuatnya.`,
     );
-  }
-  if (!sheetIds.has(SHEET_CONFIG)) {
-    logger.warn(`Sheet "${SHEET_CONFIG}" tidak ada (opsional untuk fase 1).`);
   }
 
   logger.info('Google Sheets terhubung', { title: meta.data.properties?.title });
