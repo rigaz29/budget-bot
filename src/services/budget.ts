@@ -4,7 +4,14 @@
  * block so the monospace font keeps columns roughly aligned.
  */
 
-import type { Budget, BudgetPeriod, CategorySpend, SavingGoal, Transaction } from '../types';
+import type {
+  Budget,
+  BudgetPeriod,
+  CategorySpend,
+  PeriodSummary,
+  SavingGoal,
+  Transaction,
+} from '../types';
 import { formatRupiah, formatRupiahShort } from '../utils/currency';
 import { daysRemaining, formatDateShort, formatPeriod, fromYMD } from '../utils/period';
 
@@ -31,6 +38,25 @@ export function escapeHtml(s: string): string {
 
 function typeIcon(t: Transaction): string {
   return t.type === 'income' ? '💰' : t.type === 'saving' ? '🏦' : '💸';
+}
+
+/** Sort key for "most recent": when it was recorded, else the transaction date. */
+function recency(t: Transaction): number {
+  const ts = Date.parse(t.timestamp);
+  if (!Number.isNaN(ts)) return ts;
+  return fromYMD(t.date)?.getTime() ?? 0;
+}
+
+/**
+ * Newest first by record time — NOT sheet row order, which changes as soon as
+ * someone sorts the Transactions tab via its filter (and /undo would then delete
+ * the wrong row). Ties (items of one multi-item message) keep the later row first.
+ */
+export function newestFirst(txs: Transaction[]): Transaction[] {
+  return txs
+    .map((t, i) => ({ t, i }))
+    .sort((a, b) => recency(b.t) - recency(a.t) || b.i - a.i)
+    .map((x) => x.t);
 }
 
 /** Shared transaction log for /riwayat: newest first, both users, all types (HTML). */
@@ -171,8 +197,12 @@ export function formatRecap(
 
   parts.push('');
   parts.push(`<b>Pengeluaran vs Budget:</b> ${totalLine}`);
-  parts.push('');
-  parts.push(`<pre>${lines.join('\n')}</pre>`);
+  // Income/saving-only period with no budgets -> nothing to tabulate; skip the
+  // block rather than send an empty <pre>.
+  if (lines.length > 0) {
+    parts.push('');
+    parts.push(`<pre>${lines.join('\n')}</pre>`);
+  }
 
   // Top 5 largest transactions.
   const top = topTransactions(transactions, 5);
@@ -234,19 +264,74 @@ export function formatBudgets(
 }
 
 /**
+ * One-line footer for transaction confirmations: how much is left this period.
+ *
+ * Anchors, in order of usefulness — the first one the data supports wins:
+ *   1. budget is set   -> budget − pengeluaran (the actionable number)
+ *   2. income recorded -> income − pengeluaran − tabungan ("sisa gaji")
+ *   3. neither         -> total pengeluaran (at least something to react to)
+ *
+ * The percentage suffix is only shown when the entry touched exactly one
+ * budgeted category — with several, no single percentage means anything.
+ * Returns null for income/saving-only entries, where "sisa" isn't the point.
+ */
+export function formatSisaLine(
+  summary: PeriodSummary,
+  expenseCategories: string[],
+): string | null {
+  if (expenseCategories.length === 0) return null;
+
+  let hint = '';
+  const unique = [...new Set(expenseCategories)];
+  if (unique.length === 1) {
+    const cat = unique[0];
+    const limit = summary.limitByCategory[cat] ?? 0;
+    if (limit > 0) {
+      const pct = Math.round(((summary.spentByCategory[cat] ?? 0) / limit) * 100);
+      hint = ` · ${pct >= 100 ? '⚠️' : emojiFor(cat)} ${escapeHtml(cat)} ${pct}%`;
+    }
+  }
+
+  if (summary.totalLimit > 0) {
+    const sisa = summary.totalLimit - summary.expense;
+    return sisa >= 0
+      ? `💵 Sisa budget: <b>${formatRupiah(sisa)}</b>${hint}`
+      : `⚠️ Lewat budget: <b>${formatRupiah(-sisa)}</b>${hint}`;
+  }
+
+  if (summary.income > 0) {
+    const sisa = summary.income - summary.expense - summary.saving;
+    return sisa >= 0
+      ? `💵 Sisa bulan ini: <b>${formatRupiah(sisa)}</b>${hint}`
+      : `⚠️ Minus bulan ini: <b>${formatRupiah(-sisa)}</b>${hint}`;
+  }
+
+  return `💸 Keluar bulan ini: <b>${formatRupiah(summary.expense)}</b>${hint}`;
+}
+
+/**
  * Build the /tabungan listing (HTML): accumulated savings vs target per goal,
  * all-time (savings accumulate — not per period).
  */
 export function formatSavings(allTransactions: Transaction[], goals: SavingGoal[]): string {
-  const savedByGoal = new Map<string, number>();
+  // Goals match case-insensitively: "/tabungan liburan 5jt" must line up with
+  // savings the parser recorded as "Liburan" (the Dashboard's formulas compare
+  // case-insensitively too). The Tabungan sheet's spelling wins for display.
+  const key = (name: string) => name.trim().toLowerCase();
+  const byGoal = new Map<string, { goal: string; saved: number; target: number }>();
+  for (const g of goals) byGoal.set(key(g.goal), { goal: g.goal, saved: 0, target: g.target });
   for (const t of allTransactions) {
     if (t.type !== 'saving') continue;
-    savedByGoal.set(t.category, (savedByGoal.get(t.category) ?? 0) + t.amount);
+    const k = key(t.category);
+    let row = byGoal.get(k);
+    if (!row) {
+      row = { goal: t.category, saved: 0, target: 0 };
+      byGoal.set(k, row);
+    }
+    row.saved += t.amount;
   }
 
-  // Union of goals with a target and goals that only have savings so far.
-  const names = new Set<string>([...goals.map((g) => g.goal), ...savedByGoal.keys()]);
-  if (names.size === 0) {
+  if (byGoal.size === 0) {
     return (
       '🏦 Belum ada tabungan.\n\n' +
       'Catat dengan: <i>nabung dana darurat 500rb</i>\n' +
@@ -254,12 +339,7 @@ export function formatSavings(allTransactions: Transaction[], goals: SavingGoal[
     );
   }
 
-  const targetByGoal = new Map(goals.map((g) => [g.goal, g.target]));
-  const rows = [...names].map((name) => ({
-    goal: name,
-    saved: savedByGoal.get(name) ?? 0,
-    target: targetByGoal.get(name) ?? 0,
-  }));
+  const rows = [...byGoal.values()];
   rows.sort((a, b) => b.saved - a.saved);
 
   const parts: string[] = [];

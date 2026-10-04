@@ -9,15 +9,17 @@
 import type { Bot, Context } from 'grammy';
 import { formatRupiah } from '../utils/currency';
 import { escapeHtml } from '../services/budget';
+import * as periodCache from '../services/periodCache';
 import * as sheets from '../services/sheets';
 import { logger } from '../utils/logger';
-import { multiConfirm, singleConfirm } from './persist';
+import { multiConfirm, pendingConfirm, singleConfirm, sisaLine } from './persist';
 import * as pending from './pending';
 
 async function cancelSingle(ctx: Context, id: string): Promise<void> {
   const deleted = await sheets.deleteTransactionById(id);
   await ctx.answerCallbackQuery({ text: deleted ? 'Dibatalkan' : 'Sudah tidak ada' });
   if (deleted) {
+    await periodCache.removed([deleted]);
     await ctx.editMessageText(
       `🗑 <b>Dibatalkan</b>\n${formatRupiah(deleted.amount)} — ${escapeHtml(deleted.category)} · ${escapeHtml(deleted.description)}`,
       { parse_mode: 'HTML' },
@@ -29,12 +31,23 @@ async function cancelSingle(ctx: Context, id: string): Promise<void> {
 
 async function cancelAll(ctx: Context, ids: string[]): Promise<void> {
   let count = 0;
+  const deletedTxs = [];
   for (const id of ids) {
     const deleted = await sheets.deleteTransactionById(id);
-    if (deleted) count++;
+    if (deleted) {
+      deletedTxs.push(deleted);
+      count++;
+    }
   }
-  await ctx.answerCallbackQuery({ text: `${count} dibatalkan` });
-  await ctx.editMessageText(`🗑 <b>${count} transaksi dibatalkan</b>`, { parse_mode: 'HTML' });
+  await periodCache.removed(deletedTxs);
+  await ctx.answerCallbackQuery({ text: count > 0 ? `${count} dibatalkan` : 'Sudah tidak ada' });
+  // A double tap must not overwrite "3 transaksi dibatalkan" with "0 ...".
+  await ctx.editMessageText(
+    count > 0
+      ? `🗑 <b>${count} transaksi dibatalkan</b>`
+      : '🗑 Transaksi ini sudah dibatalkan sebelumnya.',
+    { parse_mode: 'HTML' },
+  );
 }
 
 async function savePending(ctx: Context, token: string): Promise<void> {
@@ -48,13 +61,21 @@ async function savePending(ctx: Context, token: string): Promise<void> {
     await sheets.appendTransactions(txs);
   } catch (err) {
     logger.error('Gagal simpan pending', err);
-    await ctx.answerCallbackQuery({ text: 'Gagal simpan' });
-    await ctx.editMessageText('⚠️ Gagal menyimpan ke Sheets. Coba lagi.');
+    // take() already consumed the entry: put it back and keep the buttons, or
+    // "coba lagi" would be impossible and the parsed photo lost.
+    pending.put(token, txs, Date.now());
+    await ctx.answerCallbackQuery({ text: 'Gagal simpan, coba lagi' });
+    const view = pendingConfirm(txs, token);
+    await ctx.editMessageText(`${view.text}\n\n⚠️ Gagal menyimpan ke Sheets. Tekan <b>Simpan</b> lagi.`, {
+      parse_mode: 'HTML',
+      reply_markup: view.keyboard,
+    });
     return;
   }
   await ctx.answerCallbackQuery({ text: 'Disimpan' });
   logger.info('Pending disimpan', { count: txs.length });
-  const view = txs.length === 1 ? singleConfirm(txs[0]) : multiConfirm(txs);
+  const sisa = await sisaLine(txs);
+  const view = txs.length === 1 ? singleConfirm(txs[0], sisa) : multiConfirm(txs, sisa);
   await ctx.editMessageText(view.text, { parse_mode: 'HTML', reply_markup: view.keyboard });
 }
 

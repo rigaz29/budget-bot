@@ -12,10 +12,19 @@ import { z } from 'zod';
 import { config } from '../config';
 import { PAYMENT_METHODS, type ParsedTransaction, type PaymentMethod, type TransactionType } from '../types';
 import { logger } from '../utils/logger';
+import { toYMD } from '../utils/period';
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const TEXT_TIMEOUT_MS = 15_000;
 const VISION_TIMEOUT_MS = 30_000;
+// Generous on purpose: a truncated JSON array fails to parse as a whole, and the
+// text handler then falls back to recording ONE "Lainnya" item for the message.
+// A bank-mutation screenshot can easily hold 20+ items.
+const TEXT_MAX_TOKENS = 1_500;
+const VISION_MAX_TOKENS = 3_000;
+const RETRY_DELAY_MS = 1_000;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // ---------------------------------------------------------------------------
 // Low-level request with timeout + single retry on transient failures.
@@ -44,6 +53,8 @@ async function callOpenRouter(
 
   let lastErr: unknown;
   for (let attempt = 0; attempt < 2; attempt++) {
+    // Back off before the retry; an instant retry after a 429 just fails again.
+    if (attempt > 0) await sleep(RETRY_DELAY_MS);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -117,13 +128,20 @@ function extractJson(raw: string): unknown {
   }
 }
 
+/**
+ * Numeric field that the model may emit as a string. Strings are often copied
+ * straight off a receipt with grouping separators, so "25.000" / "Rp 1.250.000"
+ * (id-ID) and "25,000" (en-US) must read as thousands, not as 25.0 / 1.25.
+ */
 const toNum = (v: unknown): number => {
   if (typeof v === 'number') return v;
-  if (typeof v === 'string') {
-    const n = Number(v.replace(/[^\d.-]/g, ''));
-    return Number.isNaN(n) ? 0 : n;
-  }
-  return 0;
+  if (typeof v !== 'string') return 0;
+  const s = v.replace(/[^\d.,-]/g, '');
+  let n: number;
+  if (/^-?\d{1,3}(\.\d{3})+(,\d+)?$/.test(s)) n = Number(s.replace(/\./g, '').replace(',', '.'));
+  else if (/^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(s)) n = Number(s.replace(/,/g, ''));
+  else n = Number(s.replace(',', '.'));
+  return Number.isNaN(n) ? 0 : n;
 };
 
 const RawItemSchema = z.object({
@@ -217,7 +235,18 @@ export function coerceItems(parsed: unknown, categories: string[]): ParsedTransa
 // Prompts.
 // ---------------------------------------------------------------------------
 
-function buildTextSystemPrompt(categories: string[]): string {
+const DAYS_ID = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+
+/**
+ * The model has no clock: without this it cannot turn "senin", "tgl 1" or a
+ * date printed on a receipt into a date_offset. Appended at the END of the
+ * system prompt so the long static prefix stays cacheable.
+ */
+function todayLine(now: Date): string {
+  return `\n\nHARI INI: ${DAYS_ID[now.getDay()]}, ${toYMD(now)}. Hitung date_offset relatif terhadap tanggal ini.`;
+}
+
+function buildTextSystemPrompt(categories: string[], now: Date): string {
   return `Kamu adalah parser transaksi keuangan Bahasa Indonesia. Ubah pesan user menjadi JSON.
 
 ATURAN OUTPUT:
@@ -274,10 +303,10 @@ Input: belanja sayur kemarin 75rb
 Output: [{"amount":75000,"category":"Belanja Rumah Tangga","description":"Belanja sayur","payment_method":"cash","date_offset":-1,"type":"expense"}]
 
 Input: halo bot
-Output: []`;
+Output: []${todayLine(now)}`;
 }
 
-function buildVisionSystemPrompt(categories: string[]): string {
+function buildVisionSystemPrompt(categories: string[], now: Date): string {
   return `Kamu adalah parser struk belanja & bukti transaksi (screenshot mutasi/notifikasi bank/e-wallet) Bahasa Indonesia. Baca gambar dan ubah menjadi JSON.
 
 ATURAN OUTPUT:
@@ -294,21 +323,26 @@ ATURAN OUTPUT:
 - payment_method: cash, qris, transfer, ewallet, debit, cc, lainnya. Logo GoPay/OVO/Dana => ewallet; "QRIS" => qris; screenshot m-banking/transfer => transfer.
 - date_offset: 0 = hari ini. Jika tanggal terbaca di struk, hitung selisih hari dari hari ini (mis. kemarin = -1). Jika tidak terbaca, 0.
 - merchant: nama toko/merchant bila terbaca; string kosong bila tidak.
-- confidence: "low" bila nominal buram/terpotong/ambigu, selain itu "high".`;
+- confidence: "low" bila nominal buram/terpotong/ambigu, selain itu "high".${todayLine(now)}`;
 }
 
 // ---------------------------------------------------------------------------
 // Public API.
 // ---------------------------------------------------------------------------
 
-export async function parseTransaction(text: string, categories: string[]): Promise<ParsedTransaction[]> {
+/** `now` = when the user sent the message; date_offset is relative to it. */
+export async function parseTransaction(
+  text: string,
+  categories: string[],
+  now = new Date(),
+): Promise<ParsedTransaction[]> {
   const content = await callOpenRouter(
     config.OPENROUTER_MODEL,
     [
-      { role: 'system', content: buildTextSystemPrompt(categories) },
+      { role: 'system', content: buildTextSystemPrompt(categories, now) },
       { role: 'user', content: text },
     ],
-    500,
+    TEXT_MAX_TOKENS,
     TEXT_TIMEOUT_MS,
   );
   const parsed = extractJson(content);
@@ -324,6 +358,7 @@ export async function parseImage(
   dataUrl: string,
   caption: string | undefined,
   categories: string[],
+  now = new Date(),
 ): Promise<VisionResult> {
   const userText = caption
     ? `Konteks dari user (prioritaskan ini): ${caption}\n\nAnalisa gambar berikut.`
@@ -332,7 +367,7 @@ export async function parseImage(
   const content = await callOpenRouter(
     config.OPENROUTER_VISION_MODEL,
     [
-      { role: 'system', content: buildVisionSystemPrompt(categories) },
+      { role: 'system', content: buildVisionSystemPrompt(categories, now) },
       {
         role: 'user',
         content: [
@@ -341,7 +376,7 @@ export async function parseImage(
         ],
       },
     ],
-    1000,
+    VISION_MAX_TOKENS,
     VISION_TIMEOUT_MS,
   );
 

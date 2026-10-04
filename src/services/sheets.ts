@@ -3,7 +3,7 @@
  *
  * - Auth via Service Account JWT (key file from GOOGLE_SERVICE_ACCOUNT_PATH).
  * - Writes are serialized through a mutex so two users appending at once can't race.
- * - Transient errors (5xx / ECONNRESET) get one retry.
+ * - Transient errors (429 / 5xx / ECONNRESET) get one retry after a short pause.
  * - init() fails fast if the spreadsheet or required tabs are missing.
  */
 
@@ -11,6 +11,7 @@ import { google, sheets_v4 } from 'googleapis';
 import { config } from '../config';
 import type { Budget, SavingGoal, Transaction, TransactionType } from '../types';
 import { logger } from '../utils/logger';
+import { fromYMD } from '../utils/period';
 
 const SHEET_TRANSACTIONS = 'Transactions';
 const SHEET_BUDGETS = 'Budgets';
@@ -37,10 +38,13 @@ function serialize<T>(fn: () => Promise<T>): Promise<T> {
 
 // --- transient retry --------------------------------------------------------
 
+const RETRY_DELAY_MS = 1_000;
+
 function isTransient(err: unknown): boolean {
   const e = err as { code?: number | string; response?: { status?: number } };
   const status = typeof e?.code === 'number' ? e.code : e?.response?.status;
-  if (status && status >= 500 && status <= 599) return true;
+  // 429 = per-minute read/write quota; it clears on its own.
+  if (status === 429 || (status && status >= 500 && status <= 599)) return true;
   return e?.code === 'ECONNRESET' || e?.code === 'ETIMEDOUT' || e?.code === 'ENOTFOUND';
 }
 
@@ -50,6 +54,7 @@ async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
   } catch (err) {
     if (isTransient(err)) {
       logger.warn('Sheets transient error, retrying once', { error: String(err) });
+      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
       return await fn();
     }
     throw err;
@@ -69,12 +74,6 @@ async function readRange(range: string): Promise<string[][]> {
     sheets.spreadsheets.values.get({ spreadsheetId: config.SPREADSHEET_ID, range }),
   );
   return (res.data.values as string[][] | undefined) ?? [];
-}
-
-function parseYMD(s: string): Date | null {
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s.trim());
-  if (!m) return null;
-  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 0, 0, 0, 0);
 }
 
 function normalizeType(raw: string | undefined): TransactionType {
@@ -357,7 +356,7 @@ export async function getTransactionsInPeriod(start: Date, end: Date): Promise<T
     if ((r[0] ?? '').toLowerCase() === 'timestamp') continue; // header
     const tx = rowToTransaction(r);
     if (!tx) continue;
-    const d = parseYMD(tx.date) ?? parseYMD(tx.timestamp);
+    const d = fromYMD(tx.date) ?? fromYMD(tx.timestamp);
     if (!d) continue;
     if (d.getTime() >= start.getTime() && d.getTime() <= end.getTime()) out.push(tx);
   }
@@ -374,16 +373,6 @@ export async function getAllTransactions(): Promise<Transaction[]> {
     if (tx) out.push(tx);
   }
   return out;
-}
-
-/** The most recent transaction (by sheet order) belonging to `user`, or null. */
-export async function getLastTransactionByUser(user: string): Promise<Transaction | null> {
-  const rows = await readRange(TX_RANGE);
-  for (let i = rows.length - 1; i >= 0; i--) {
-    const tx = rowToTransaction(rows[i]);
-    if (tx && tx.user === user) return tx;
-  }
-  return null;
 }
 
 /**

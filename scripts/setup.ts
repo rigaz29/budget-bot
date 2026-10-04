@@ -87,6 +87,9 @@ async function captureChatIds(token: string, rl: readline.Interface): Promise<Ma
       .toLowerCase();
     if (more !== 'lagi') break;
   }
+  // Acknowledge what we read, or the bot (which keeps pending updates) would
+  // answer every "hai" on its first start.
+  if (offset > 0) await getUpdates(token, offset, 0).catch(() => undefined);
   return found;
 }
 

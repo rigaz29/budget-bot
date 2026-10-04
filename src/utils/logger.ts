@@ -3,9 +3,11 @@
  * systemd/journalctl captures both streams; no log files.
  */
 
+import { toISOLocal } from './period';
+
 function ts(): string {
-  // Intl gives us the configured TZ (Asia/Jakarta) rather than raw UTC.
-  return new Date().toISOString();
+  // Local time in the configured TZ (WIB), so log lines match the sheet's timestamps.
+  return toISOLocal(new Date());
 }
 
 function fmt(level: string, msg: string, meta?: unknown): string {

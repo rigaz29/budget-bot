@@ -19,6 +19,14 @@ describe('parseRupiah', () => {
     ['grab ke rs 18.500', 18500],
     ['token listrik 200k kemarin', 200000],
     ['gopay 50k bensin', 50000],
+    // A satuan beats an earlier bare quantity / day count.
+    ['bensin 2 hari lalu 100k', 100000],
+    ['makan 2x 25rb', 25000],
+    // "kg" / "kopi" are not the "k" satuan.
+    ['beli 2 kg beras 15rb', 15000],
+    ['kopi 2 kenangan', 2000],
+    // No satuan anywhere: the price is the biggest number, not the quantity.
+    ['makan 3 porsi 45000', 45000],
     ['halo bot', null],
     ['tidak ada angka disini', null],
   ];

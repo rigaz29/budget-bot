@@ -5,8 +5,15 @@
 import type { Bot, Context } from 'grammy';
 import { config, resolveUserName } from '../config';
 import * as categories from '../services/categoryCache';
-import { formatBudgets, formatHistory, formatRecap, formatSavings } from '../services/budget';
+import {
+  formatBudgets,
+  formatHistory,
+  formatRecap,
+  formatSavings,
+  newestFirst,
+} from '../services/budget';
 import { refreshDashboard } from '../services/dashboard';
+import * as periodCache from '../services/periodCache';
 import * as sheets from '../services/sheets';
 import { formatRupiah, parseRupiah } from '../utils/currency';
 import { getCurrentPeriod, getRecentPeriod } from '../utils/period';
@@ -114,6 +121,8 @@ async function cmdBudget(ctx: Context): Promise<void> {
     await ctx.reply('⚠️ Gagal menyimpan budget ke Sheets. Coba lagi.');
     return;
   }
+  // Limits changed -> the cached rollup's budget side is stale.
+  periodCache.invalidate();
   await ctx.reply(`✅ Budget <b>${escapeHtml(canonical)}</b> diset ke ${formatRupiah(amount)}.`, {
     parse_mode: 'HTML',
   });
@@ -158,7 +167,8 @@ async function cmdTabungan(ctx: Context): Promise<void> {
 async function cmdUndo(ctx: Context): Promise<void> {
   const chatId = ctx.from?.id ?? ctx.chat?.id ?? 0;
   const userName = resolveUserName(chatId);
-  const last = await sheets.getLastTransactionByUser(userName);
+  const all = await sheets.getAllTransactions();
+  const last = newestFirst(all).find((t) => t.user === userName);
   if (!last) {
     await ctx.reply('Tidak ada transaksi milikmu yang bisa dibatalkan.');
     return;
@@ -168,6 +178,7 @@ async function cmdUndo(ctx: Context): Promise<void> {
     await ctx.reply('Transaksi terakhir sudah tidak ada.');
     return;
   }
+  await periodCache.removed([deleted]);
   await ctx.reply(
     `🗑 <b>Dibatalkan</b>\n${formatRupiah(deleted.amount)} — ${escapeHtml(deleted.category)} · ${escapeHtml(deleted.description)}`,
     { parse_mode: 'HTML' },
@@ -269,7 +280,7 @@ async function cmdRiwayat(ctx: Context): Promise<void> {
     if (Number.isInteger(n) && n > 0) limit = Math.min(n, 30);
   }
   const all = await sheets.getAllTransactions();
-  const recent = all.slice(-limit).reverse(); // sheet order = send order; newest first
+  const recent = newestFirst(all).slice(0, limit);
   await ctx.reply(formatHistory(recent), { parse_mode: 'HTML' });
 }
 

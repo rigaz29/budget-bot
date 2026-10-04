@@ -21,7 +21,10 @@ mutasi**, bot mem-parsing via LLM dan menyimpan ke **Google Sheets**.
 - **Foto**: struk belanja, notifikasi GoPay/OVO/Dana/QRIS, bukti transfer & mutasi bank
   (uang masuk dicatat sebagai pemasukan); struk buram memicu konfirmasi.
 - **Caption foto** jadi konteks kategorisasi (mis. "patungan, catat setengahnya").
-- **Undo**: tombol `❌ Batalkan` di tiap konfirmasi + `/undo`.
+- **Undo**: tombol `❌ Batalkan` di tiap konfirmasi + `/undo` (transaksi terakhir menurut waktu
+  catat, jadi tetap benar walau tab Transactions di-sort di browser).
+- **Tahan restart**: pesan yang terkirim saat bot mati/restart tetap diproses begitu bot hidup;
+  tanggal mengikuti waktu pesan dikirim, bukan waktu diproses.
 - **/recap**, **/budget**, **/tabungan** dengan periode custom (default mulai tanggal 25 / gajian).
 
 ---
@@ -287,7 +290,8 @@ src/
 ## Testing
 
 - Unit (vitest): `currency` (parsing rupiah), `period` (periode budget + edge case Februari),
-  `parse` (validasi & normalisasi output LLM). Jalankan `npm test`.
+  `parse` (validasi & normalisasi output LLM + tanggal hari ini di prompt), `budget` (sisa budget,
+  tabungan, urutan riwayat), `periodCache` (rollup periode). Jalankan `npm test`.
 - `test-cases.md`: 30 contoh input teks untuk validasi manual prompt.
 - `test-images/`: kumpulkan sampel struk/mutasi untuk validasi prompt vision (isi folder di-`.gitignore`).
 

@@ -11,7 +11,14 @@ import * as categories from '../services/categoryCache';
 import { parseImage } from '../services/llm';
 import * as sheets from '../services/sheets';
 import { logger } from '../utils/logger';
-import { buildTransactions, genId, multiConfirm, pendingConfirm, singleConfirm } from './persist';
+import {
+  buildTransactions,
+  genId,
+  multiConfirm,
+  pendingConfirm,
+  singleConfirm,
+  sisaLine,
+} from './persist';
 import * as pending from './pending';
 
 async function downloadAsDataUrl(ctx: Context, fileId: string, mime: string): Promise<string> {
@@ -28,9 +35,9 @@ async function downloadAsDataUrl(ctx: Context, fileId: string, mime: string): Pr
 function pickImage(ctx: Context): { fileId: string; mime: string } | null {
   const photos = ctx.message?.photo;
   if (photos && photos.length > 0) {
-    // Second-largest size: good quality/size tradeoff (fall back to the only one).
-    const idx = photos.length >= 2 ? photos.length - 2 : photos.length - 1;
-    return { fileId: photos[idx].file_id, mime: 'image/jpeg' };
+    // Largest size: Telegram caps the long side (~1280px), so a tall receipt is
+    // already narrow — any smaller rendition makes the small print illegible.
+    return { fileId: photos[photos.length - 1].file_id, mime: 'image/jpeg' };
   }
   const doc = ctx.message?.document;
   if (doc && doc.mime_type?.startsWith('image/')) {
@@ -41,12 +48,19 @@ function pickImage(ctx: Context): { fileId: string; mime: string } | null {
 
 async function handlePhoto(ctx: Context): Promise<void> {
   const image = pickImage(ctx);
-  if (!image) return;
+  if (!image) {
+    // e.g. a PDF e-statement: say so instead of silently ignoring it.
+    if (ctx.message?.document) {
+      await ctx.reply('📄 Hanya gambar (foto / screenshot) yang bisa dibaca. Kirim sebagai foto ya.');
+    }
+    return;
+  }
 
   const chatId = ctx.from?.id ?? ctx.chat?.id;
   const userName = resolveUserName(chatId ?? 0);
   const caption = ctx.message?.caption?.trim() || undefined;
   const cats = categories.getCategories();
+  const sentAt = ctx.message?.date ? new Date(ctx.message.date * 1000) : new Date();
 
   const placeholder = await ctx.reply('🔍 Membaca struk...');
   const edit = (text: string, keyboard?: import('grammy').InlineKeyboard) =>
@@ -58,7 +72,7 @@ async function handlePhoto(ctx: Context): Promise<void> {
   let result;
   try {
     const dataUrl = await downloadAsDataUrl(ctx, image.fileId, image.mime);
-    result = await parseImage(dataUrl, caption, cats);
+    result = await parseImage(dataUrl, caption, cats, sentAt);
   } catch (err) {
     logger.error('parseImage gagal', err);
     await edit('⚠️ Gagal membaca gambar. Coba lagi, atau ketik transaksinya manual.');
@@ -74,9 +88,8 @@ async function handlePhoto(ctx: Context): Promise<void> {
     return;
   }
 
-  const now = new Date();
   const base = `[foto]${caption ? ' ' + caption : ''}`;
-  const txs = buildTransactions(result.items, userName, now, base);
+  const txs = buildTransactions(result.items, userName, sentAt, base);
   txs.forEach((t, i) => {
     const merch = result.items[i].merchant;
     t.raw_input = `${base}${merch ? ' | merchant: ' + merch : ''}`;
@@ -102,11 +115,12 @@ async function handlePhoto(ctx: Context): Promise<void> {
 
   logger.info('Transaksi foto tercatat', { user: userName, count: txs.length });
 
+  const sisa = await sisaLine(txs);
   if (txs.length === 1) {
-    const { text, keyboard } = singleConfirm(txs[0]);
+    const { text, keyboard } = singleConfirm(txs[0], sisa);
     await edit(text, keyboard);
   } else {
-    const { text, keyboard } = multiConfirm(txs);
+    const { text, keyboard } = multiConfirm(txs, sisa);
     await edit(text, keyboard);
   }
 }

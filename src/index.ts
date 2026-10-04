@@ -3,11 +3,12 @@
  *   1. validate config (imported side-effect in ./config)
  *   2. connect to Sheets (fail fast)
  *   3. load categories from the sheet
- *   4. register middleware + handlers
- *   5. start long polling
+ *   4. preload the current period's rollup (for the "sisa budget" footer)
+ *   5. register middleware + handlers
+ *   6. start long polling
  */
 
-import { Bot } from 'grammy';
+import { Bot, GrammyError } from 'grammy';
 import { config } from './config';
 import { authMiddleware } from './middleware/auth';
 import { registerCommandHandlers } from './handlers/commands';
@@ -16,6 +17,7 @@ import { registerPhotoHandler } from './handlers/photo';
 import { registerTransactionHandler } from './handlers/transaction';
 import * as sheets from './services/sheets';
 import * as categories from './services/categoryCache';
+import * as periodCache from './services/periodCache';
 import { logger } from './utils/logger';
 
 async function main(): Promise<void> {
@@ -25,6 +27,9 @@ async function main(): Promise<void> {
   await sheets.init();
   const cats = await categories.reload();
   logger.info('Kategori dimuat', { count: cats.length });
+
+  // Preload the period rollup so the first confirmation doesn't pay for the read.
+  await periodCache.warm();
 
   const bot = new Bot(config.BOT_TOKEN);
 
@@ -39,6 +44,14 @@ async function main(): Promise<void> {
 
   // Global error boundary: one bad update must never crash the bot.
   bot.catch(async (err) => {
+    // Stop the button's loading spinner (no-op if the handler already answered).
+    if (err.ctx.callbackQuery) {
+      await err.ctx.answerCallbackQuery().catch(() => undefined);
+    }
+    // A double tap re-sends an identical edit, which Telegram rejects. Harmless.
+    if (err.error instanceof GrammyError && /message is not modified/i.test(err.error.description)) {
+      return;
+    }
     logger.error('Handler error', err.error);
     try {
       await err.ctx.reply('⚠️ Ada kesalahan sesaat. Coba lagi ya.');
@@ -71,7 +84,10 @@ async function main(): Promise<void> {
   process.once('SIGTERM', () => shutdown('SIGTERM'));
 
   await bot.start({
-    drop_pending_updates: true,
+    // Keep messages that arrived while the bot was down/restarting: dropping them
+    // would silently lose transactions. Dates resolve against each message's own
+    // send time, so a late "kemarin" still lands on the right day.
+    drop_pending_updates: false,
     onStart: (info) => logger.info('Bot online', { username: info.username }),
   });
 }

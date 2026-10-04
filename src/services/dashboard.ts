@@ -40,6 +40,7 @@ const THEMES: Record<string, SheetTheme> = {
   Transactions: { headerBg: hex('#1e40af'), altBand: hex('#eff6ff'), tab: hex('#2563eb') },
   Budgets: { headerBg: hex('#166534'), altBand: hex('#f0fdf4'), tab: hex('#16a34a') },
   Categories: { headerBg: hex('#6b21a8'), altBand: hex('#faf5ff'), tab: hex('#9333ea') },
+  Tabungan: { headerBg: hex('#0e7490'), altBand: hex('#ecfeff'), tab: hex('#0891b2') },
   Config: { headerBg: hex('#374151'), altBand: hex('#f9fafb'), tab: hex('#6b7280') },
 };
 
@@ -160,7 +161,8 @@ function banding(sheetId: number, sr: number, er: number | undefined, ec: number
   };
 }
 
-function numberFormat(sheetId: number, sr: number, er: number, sc: number, ec: number, pattern: string, type: string, align?: string): Req {
+/** `er` undefined = to the last row (an unbounded range can never exceed the grid). */
+function numberFormat(sheetId: number, sr: number, er: number | undefined, sc: number, ec: number, pattern: string, type: string, align?: string): Req {
   const uef: sheets_v4.Schema$CellFormat = { numberFormat: { type, pattern } };
   let fields = 'userEnteredFormat.numberFormat';
   if (align) {
@@ -245,6 +247,16 @@ async function readGoals(sheets: sheets_v4.Sheets, spreadsheetId: string): Promi
 }
 
 // --- Dashboard content -------------------------------------------------------
+
+/**
+ * Category / goal names are user-typed and written with USER_ENTERED: a leading
+ * apostrophe keeps "=..." / "+..." / "-..." / "@..." a literal label instead of
+ * being evaluated as a formula. The stored value stays the plain name, so the
+ * VLOOKUP/SUMPRODUCT matches against it still work.
+ */
+function asLabel(name: string): string {
+  return /^[=+\-@]/.test(name) ? `'${name}` : name;
+}
 
 function startFormula(): string {
   return (
@@ -357,7 +369,7 @@ function buildDashboard(categories: string[], goals: string[], startDay: number)
   set(rExpHeader, 3, 'Sisa'); set(rExpHeader, 4, '%'); set(rExpHeader, 5, 'Progress');
   for (let i = 0; i < k; i++) {
     const row = rExp0 + i;
-    set(row, 0, categories[i]);
+    set(row, 0, asLabel(categories[i]));
     set(row, 1, `=IFERROR(VLOOKUP($A${row},Budgets!$A:$B,2,FALSE),0)`);
     set(row, 2, `=SUMPRODUCT((Transactions!$E:$E=$A${row})*${F_EXPENSE}*${F_DATE_IN}*${F_AMT})`);
     set(row, 3, `=$B${row}-$C${row}`);
@@ -395,7 +407,7 @@ function buildDashboard(categories: string[], goals: string[], startDay: number)
   set(rSavHead, 3, 'Sisa'); set(rSavHead, 4, '%'); set(rSavHead, 5, 'Progress');
   for (let i = 0; i < g; i++) {
     const row = rSav0 + i;
-    set(row, 0, goals[i]);
+    set(row, 0, asLabel(goals[i]));
     set(row, 1, `=IFERROR(VLOOKUP($A${row},Tabungan!$A:$B,2,FALSE),0)`);
     set(row, 2, `=SUMPRODUCT((Transactions!$E:$E=$A${row})*${F_SAVING}*${F_AMT})`);
     set(row, 3, `=$B${row}-$C${row}`);
@@ -884,7 +896,7 @@ export async function refreshDashboard(): Promise<{ categories: number; goals: n
 
   // Dashboard styling. Unmerge first so re-runs don't hit overlapping-merge errors.
   if (dash.mergeCount > 0) {
-    requests.push({ unmergeCells: { range: grid(dash.sheetId, 0, 300, 0, 12) } });
+    requests.push({ unmergeCells: { range: grid(dash.sheetId, 0, undefined, 0, 12) } });
   }
   requests.push(...dashboardRequests(dash.sheetId, layout));
 
@@ -893,15 +905,16 @@ export async function refreshDashboard(): Promise<{ categories: number; goals: n
     requests.push({ deleteConditionalFormatRule: { sheetId: rekap.sheetId, index: i } });
   }
   if (rekap.mergeCount > 0) {
-    requests.push({ unmergeCells: { range: grid(rekap.sheetId, 0, 60, 0, 12) } });
+    requests.push({ unmergeCells: { range: grid(rekap.sheetId, 0, undefined, 0, 12) } });
   }
   requests.push(...monthlyRequests(rekap.sheetId, monthly));
 
   // Data tabs.
   const DATA_TABS: Array<[string, number]> = [
-    ['Transactions', 9],
+    ['Transactions', 10], // A..J (J = type)
     ['Budgets', 2],
     ['Categories', 1],
+    ['Tabungan', 2],
     ['Config', 2],
   ];
   for (const [title, cols] of DATA_TABS) {
@@ -914,26 +927,33 @@ export async function refreshDashboard(): Promise<{ categories: number; goals: n
   // Transactions: amount (D) currency + right align, date (B) centered, widths, filter.
   const tx = meta.get('Transactions');
   if (tx) {
-    requests.push(numberFormat(tx.sheetId, 1, 5000, 3, 4, CURRENCY, 'CURRENCY', 'RIGHT'));
+    requests.push(numberFormat(tx.sheetId, 1, undefined, 3, 4, CURRENCY, 'CURRENCY', 'RIGHT'));
     requests.push({
       repeatCell: {
-        range: grid(tx.sheetId, 1, 5000, 1, 2),
+        range: grid(tx.sheetId, 1, undefined, 1, 2),
         cell: { userEnteredFormat: { horizontalAlignment: 'CENTER' } },
         fields: 'userEnteredFormat.horizontalAlignment',
       },
     });
-    const txw: [number, number][] = [[0, 155], [1, 95], [2, 80], [3, 110], [4, 150], [5, 220], [6, 120], [7, 200], [8, 90]];
+    const txw: [number, number][] = [[0, 155], [1, 95], [2, 80], [3, 110], [4, 150], [5, 220], [6, 120], [7, 200], [8, 90], [9, 90]];
     for (const [c, px] of txw) requests.push(colWidth(tx.sheetId, c, px));
     if (tx.hasFilter) requests.push({ clearBasicFilter: { sheetId: tx.sheetId } });
-    requests.push({ setBasicFilter: { filter: { range: grid(tx.sheetId, 0, undefined, 0, 9) } } });
+    // Include J so the tab can be filtered by type (income / saving / expense).
+    requests.push({ setBasicFilter: { filter: { range: grid(tx.sheetId, 0, undefined, 0, 10) } } });
   }
 
   // Budgets: monthly_limit (B) currency, widths.
   const bg = meta.get('Budgets');
   if (bg) {
-    requests.push(numberFormat(bg.sheetId, 1, 500, 1, 2, CURRENCY, 'CURRENCY', 'RIGHT'));
+    requests.push(numberFormat(bg.sheetId, 1, undefined, 1, 2, CURRENCY, 'CURRENCY', 'RIGHT'));
     requests.push(colWidth(bg.sheetId, 0, 190));
     requests.push(colWidth(bg.sheetId, 1, 150));
+  }
+  const sav = meta.get('Tabungan');
+  if (sav) {
+    requests.push(numberFormat(sav.sheetId, 1, undefined, 1, 2, CURRENCY, 'CURRENCY', 'RIGHT'));
+    requests.push(colWidth(sav.sheetId, 0, 190));
+    requests.push(colWidth(sav.sheetId, 1, 150));
   }
   const cat = meta.get('Categories');
   if (cat) requests.push(colWidth(cat.sheetId, 0, 210));

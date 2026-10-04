@@ -42,6 +42,15 @@ const userNameMap = z
     return map;
   });
 
+function isValidTimeZone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const EnvSchema = z.object({
   BOT_TOKEN: z.string().min(1, 'BOT_TOKEN wajib diisi'),
   ALLOWED_CHAT_IDS: chatIdList,
@@ -57,7 +66,11 @@ const EnvSchema = z.object({
     .refine((p) => existsSync(p), (p) => ({ message: `File service account tidak ditemukan: ${p}` })),
   SPREADSHEET_ID: z.string().min(1, 'SPREADSHEET_ID wajib diisi'),
 
-  TZ: z.string().min(1).default('Asia/Jakarta'),
+  TZ: z
+    .string()
+    .min(1)
+    .default('Asia/Jakarta')
+    .refine(isValidTimeZone, (tz) => ({ message: `TZ tidak dikenal: ${tz} (mis. Asia/Jakarta)` })),
   BUDGET_START_DAY: z
     .string()
     .default('1')
@@ -81,6 +94,10 @@ function load(): Config {
     process.exit(1);
   }
   const env = parsed.data;
+  // All date math reads the process timezone. Apply the validated value so the
+  // default actually takes effect — otherwise a missing TZ silently means UTC on
+  // a VPS, and anything recorded 00:00–07:00 WIB lands on the previous day.
+  process.env.TZ = env.TZ;
   return {
     ...env,
     allowedChatIds: new Set(env.ALLOWED_CHAT_IDS),

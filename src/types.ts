@@ -96,3 +96,19 @@ export interface CategorySpend {
   spent: number;
   limit: number | null;
 }
+
+/**
+ * Snapshot of the current budget period, served by `services/periodCache` so
+ * transaction confirmations can show the remaining budget without re-reading
+ * the whole Transactions sheet.
+ */
+export interface PeriodSummary {
+  period: BudgetPeriod;
+  income: number;
+  expense: number;
+  saving: number;
+  /** Sum of every category limit in the Budgets sheet (0 = no budget set). */
+  totalLimit: number;
+  spentByCategory: Record<string, number>;
+  limitByCategory: Record<string, number>;
+}

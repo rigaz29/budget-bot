@@ -44,18 +44,27 @@ function interpret(rawNum: string, satuan?: string): number | null {
 }
 
 /**
- * Scan free text and return the first plausible rupiah amount, or null.
- * Longer satuan words are matched before shorter ones (juta before jt, etc.).
+ * Scan free text and return the most plausible rupiah amount, or null.
+ *
+ * The first number with an explicit satuan ("25rb") wins — that is the price.
+ * Without one, the largest bare number wins: quantities and day counts
+ * ("2 porsi", "2 hari lalu") are small, prices are not.
+ *
+ * Longer satuan words are matched before shorter ones (juta before jt, etc.),
+ * and a satuan must end at a word boundary so "2 kg" / "2 kopi" aren't "2k".
  */
 export function parseRupiah(input: string): number | null {
   const text = input.toLowerCase();
-  const re = /(\d[\d.,]*)\s*(juta|ribu|jt|rb|k)?/g;
+  const re = /(\d[\d.,]*)(?:\s*(juta|ribu|jt|rb|k)\b)?/g;
+  let largestBare: number | null = null;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
     const value = interpret(m[1], m[2]);
-    if (value !== null && value > 0) return value;
+    if (value === null || value <= 0) continue;
+    if (m[2]) return value;
+    if (largestBare === null || value > largestBare) largestBare = value;
   }
-  return null;
+  return largestBare;
 }
 
 /** Format integer rupiah as "Rp 18.500". */

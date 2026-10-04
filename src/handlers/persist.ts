@@ -14,7 +14,9 @@ import { InlineKeyboard } from 'grammy';
 import type { ParsedTransaction, Transaction } from '../types';
 import { formatRupiah } from '../utils/currency';
 import { applyOffset, formatDateID, fromYMD, toISOLocal, toYMD } from '../utils/period';
-import { escapeHtml } from '../services/budget';
+import { escapeHtml, formatSisaLine } from '../services/budget';
+import * as periodCache from '../services/periodCache';
+import { logger } from '../utils/logger';
 
 export function genId(): string {
   return randomUUID().replace(/-/g, '').slice(0, 8);
@@ -64,18 +66,41 @@ export function singleCancelKeyboard(id: string): InlineKeyboard {
   return new InlineKeyboard().text('❌ Batalkan', `cx:${id}`);
 }
 
+/**
+ * Remaining-budget footer for `txs`, which must ALREADY be written to the sheet.
+ * Best-effort: a Sheets hiccup drops the line rather than the confirmation.
+ */
+export async function sisaLine(txs: Transaction[], now = new Date()): Promise<string | null> {
+  try {
+    const summary = await periodCache.summaryAfter(txs, now);
+    if (!summary) return null;
+    const expenseCategories = txs.filter((t) => t.type === 'expense').map((t) => t.category);
+    return formatSisaLine(summary, expenseCategories);
+  } catch (err) {
+    logger.warn('Gagal menghitung sisa budget', err);
+    return null;
+  }
+}
+
 /** Confirmation for a single recorded transaction. */
-export function singleConfirm(tx: Transaction): { text: string; keyboard: InlineKeyboard } {
+export function singleConfirm(
+  tx: Transaction,
+  sisa?: string | null,
+): { text: string; keyboard: InlineKeyboard } {
   const text =
     `✅ <b>${typeLabel(tx)}</b>\n` +
     `${typeIcon(tx)} ${formatRupiah(tx.amount)} — ${escapeHtml(tx.category)}${methodSuffix(tx)}\n` +
     `📝 ${escapeHtml(tx.description)}\n` +
-    `👤 ${escapeHtml(tx.user)} · ${humanDate(tx)}`;
+    `👤 ${escapeHtml(tx.user)} · ${humanDate(tx)}` +
+    (sisa ? `\n${sisa}` : '');
   return { text, keyboard: singleCancelKeyboard(tx.id) };
 }
 
 /** Confirmation summary for a multi-transaction message. */
-export function multiConfirm(txs: Transaction[]): { text: string; keyboard?: InlineKeyboard } {
+export function multiConfirm(
+  txs: Transaction[],
+  sisa?: string | null,
+): { text: string; keyboard?: InlineKeyboard } {
   const total = txs.reduce((s, t) => s + t.amount, 0);
   const lines = txs.map(
     (t, i) =>
@@ -85,7 +110,8 @@ export function multiConfirm(txs: Transaction[]): { text: string; keyboard?: Inl
     `✅ <b>${txs.length} transaksi tercatat</b>\n` +
     `${lines.join('\n')}\n` +
     `<b>Total:</b> ${formatRupiah(total)}\n` +
-    `👤 ${escapeHtml(txs[0].user)} · ${humanDate(txs[0])}`;
+    `👤 ${escapeHtml(txs[0].user)} · ${humanDate(txs[0])}` +
+    (sisa ? `\n${sisa}` : '');
 
   // "Batalkan semua" only if the ids fit inside Telegram's 64-byte callback data.
   const data = `cxa:${txs.map((t) => t.id).join('.')}`;

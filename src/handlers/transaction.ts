@@ -11,7 +11,7 @@ import * as sheets from '../services/sheets';
 import type { ParsedTransaction } from '../types';
 import { parseRupiah } from '../utils/currency';
 import { logger } from '../utils/logger';
-import { buildTransactions, multiConfirm, singleConfirm } from './persist';
+import { buildTransactions, multiConfirm, singleConfirm, sisaLine } from './persist';
 
 const NEEDS_NOMINAL =
   '❌ Gagal memahami input, coba format: <code>deskripsi nominal</code> (mis: makan siang 25rb)';
@@ -23,11 +23,14 @@ async function handleText(ctx: Context): Promise<void> {
   const chatId = ctx.from?.id ?? ctx.chat?.id;
   const userName = resolveUserName(chatId ?? 0);
   const cats = categories.getCategories();
+  // Resolve "hari ini"/"kemarin" against when the user SENT it: a message sent at
+  // 23:59 or queued during a restart must not shift to the next day.
+  const sentAt = ctx.message?.date ? new Date(ctx.message.date * 1000) : new Date();
 
   let items: ParsedTransaction[] = [];
   let llmFailed = false;
   try {
-    items = await parseTransaction(text, cats);
+    items = await parseTransaction(text, cats, sentAt);
   } catch (err) {
     llmFailed = true;
     logger.error('parseTransaction gagal', err);
@@ -63,8 +66,7 @@ async function handleText(ctx: Context): Promise<void> {
     return;
   }
 
-  const now = new Date();
-  const txs = buildTransactions(items, userName, now, text);
+  const txs = buildTransactions(items, userName, sentAt, text);
 
   try {
     await sheets.appendTransactions(txs);
@@ -76,11 +78,12 @@ async function handleText(ctx: Context): Promise<void> {
 
   logger.info('Transaksi tercatat', { user: userName, count: txs.length });
 
+  const sisa = await sisaLine(txs);
   if (txs.length === 1) {
-    const { text: msg, keyboard } = singleConfirm(txs[0]);
+    const { text: msg, keyboard } = singleConfirm(txs[0], sisa);
     await ctx.reply(msg, { parse_mode: 'HTML', reply_markup: keyboard });
   } else {
-    const { text: msg, keyboard } = multiConfirm(txs);
+    const { text: msg, keyboard } = multiConfirm(txs, sisa);
     await ctx.reply(msg, { parse_mode: 'HTML', reply_markup: keyboard });
   }
 }
